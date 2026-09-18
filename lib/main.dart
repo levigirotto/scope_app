@@ -1,122 +1,330 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:mqtt_client/mqtt_client.dart';
+import 'package:mqtt_client/mqtt_server_client.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const ScopeApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+// Paleta do projeto (variante clara)
+class ScopeColors {
+  static const background = Color(0xFFF4F7FA);
+  static const panel = Color(0xFFFFFFFF);
+  static const border = Color(0xFFDCE4ED);
+  static const teal = Color(0xFF109C86);
+  static const amber = Color(0xFFE8933F);
+  static const textPrimary = Color(0xFF1A2B3C);
+  static const textDim = Color(0xFF6E86A3);
+  static const danger = Color(0xFFE5473B);
+}
 
-  // This widget is the root of your application.
+class ScopeApp extends StatelessWidget {
+  const ScopeApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'Scope',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+        scaffoldBackgroundColor: ScopeColors.background,
+        colorScheme: ColorScheme.light(
+          primary: ScopeColors.teal,
+          secondary: ScopeColors.amber,
+          surface: ScopeColors.panel,
+        ),
+        fontFamily: 'monospace',
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const KeepTrackScreen(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class KeepTrackScreen extends StatefulWidget {
+  const KeepTrackScreen({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<KeepTrackScreen> createState() => _KeepTrackScreenState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _KeepTrackScreenState extends State<KeepTrackScreen> {
+  static const String broker = 'broker.hivemq.com';
+  static const int port = 1883;
+  static const String topicoDados = 'keeptrack/dados';
+  static const String topicoRele = 'keeptrack/rele';
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  late MqttServerClient client;
+
+  bool conectado = false;
+  bool releLigado = true; // ESP32 inicia com o relé ligado
+  double? potencia;
+  double? consumo;
+  DateTime? ultimaLeitura;
+
+  @override
+  void initState() {
+    super.initState();
+    _conectar();
+  }
+
+  Future<void> _conectar() async {
+    client = MqttServerClient.withPort(
+      broker,
+      'scope-app-${DateTime.now().millisecondsSinceEpoch}',
+      port,
+    );
+    client.logging(on: false);
+    client.keepAlivePeriod = 30;
+    client.onDisconnected = () => setState(() => conectado = false);
+    client.onConnected = () => setState(() => conectado = true);
+
+    try {
+      await client.connect();
+    } catch (e) {
+      client.disconnect();
+      return;
+    }
+
+    if (client.connectionStatus?.state == MqttConnectionState.connected) {
+      setState(() => conectado = true);
+      client.subscribe(topicoDados, MqttQos.atMostOnce);
+
+      client.updates!.listen((events) {
+        final recMess = events[0].payload as MqttPublishMessage;
+        final payload = MqttPublishPayload.bytesToStringAsString(
+          recMess.payload.message,
+        );
+        _processarMensagem(payload);
+      });
+    }
+  }
+
+  void _processarMensagem(String payload) {
+    try {
+      final data = jsonDecode(payload);
+      setState(() {
+        if (data['potencia'] != null) {
+          potencia = (data['potencia'] as num).toDouble();
+        }
+        if (data['consumo'] != null) {
+          consumo = (data['consumo'] as num).toDouble();
+        }
+        ultimaLeitura = DateTime.now();
+      });
+    } catch (_) {
+      // payload inválido, ignora
+    }
+  }
+
+  void _alternarRele() {
+    final novoEstado = !releLigado;
+    final builder = MqttClientPayloadBuilder();
+    builder.addString(novoEstado ? 'ON' : 'OFF');
+
+    client.publishMessage(topicoRele, MqttQos.atMostOnce, builder.payload!);
+
+    setState(() => releLigado = novoEstado);
+  }
+
+  @override
+  void dispose() {
+    client.disconnect();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildHeader(),
+              const SizedBox(height: 28),
+              _buildMetricCard(
+                label: 'POTÊNCIA UTILIZADA',
+                value: potencia?.toStringAsFixed(0) ?? '—',
+                unit: 'W',
+                destacado: (potencia ?? 0) > 5,
+              ),
+              const SizedBox(height: 14),
+              _buildMetricCard(
+                label: 'CONSUMO (kWh)',
+                value: consumo?.toStringAsFixed(3) ?? '—',
+                unit: 'kWh',
+                destacado: (consumo ?? 0) > 0.005,
+              ),
+              const SizedBox(height: 20),
+              _buildReleButton(),
+              const Spacer(),
+              _buildFooter(),
+            ],
+          ),
+        ),
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
+    );
+  }
+
+  Widget _buildHeader() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        RichText(
+          text: const TextSpan(
+            style: TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 22,
+              fontWeight: FontWeight.w700,
+              color: ScopeColors.textPrimary,
+              letterSpacing: 0.5,
+            ),
+            children: [
+              TextSpan(text: 'KEEP'),
+              TextSpan(
+                text: 'TRACK',
+                style: TextStyle(color: ScopeColors.amber),
+              ),
+            ],
+          ),
+        ),
+        Row(
           children: [
-            const Text('You have pushed the button this many times:'),
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: conectado ? ScopeColors.teal : ScopeColors.danger,
+              ),
+            ),
+            const SizedBox(width: 6),
             Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+              conectado ? 'conectado' : 'conectando…',
+              style: const TextStyle(fontSize: 12, color: ScopeColors.textDim),
             ),
           ],
         ),
+      ],
+    );
+  }
+
+  Widget _buildMetricCard({
+    required String label,
+    required String value,
+    required String unit,
+    required bool destacado,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: ScopeColors.panel,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: ScopeColors.border),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A1A2B3C),
+            blurRadius: 8,
+            offset: Offset(0, 2),
+          ),
+        ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 32,
+            height: 3,
+            color: destacado ? ScopeColors.amber : ScopeColors.border,
+            margin: const EdgeInsets.only(bottom: 12),
+          ),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 12,
+              color: ScopeColors.textDim,
+              letterSpacing: 0.5,
+            ),
+          ),
+          const SizedBox(height: 8),
+          RichText(
+            text: TextSpan(
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.w700,
+                fontSize: 34,
+                color: ScopeColors.textPrimary,
+              ),
+              children: [
+                TextSpan(text: value),
+                TextSpan(
+                  text: ' $unit',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w400,
+                    color: ScopeColors.amber,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
+    );
+  }
+
+  Widget _buildReleButton() {
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton(
+        onPressed: conectado ? _alternarRele : null,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: releLigado ? ScopeColors.teal : ScopeColors.panel,
+          foregroundColor: releLigado ? Colors.white : ScopeColors.textPrimary,
+          side: BorderSide(
+            color: releLigado ? ScopeColors.teal : ScopeColors.border,
+          ),
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+          elevation: 0,
+        ),
+        child: Text(
+          releLigado
+              ? 'RELÉ LIGADO — TOCAR PARA DESLIGAR'
+              : 'RELÉ DESLIGADO — TOCAR PARA LIGAR',
+          style: const TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.3,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFooter() {
+    final texto = ultimaLeitura == null
+        ? 'última leitura: —'
+        : 'última leitura: ${ultimaLeitura!.hour.toString().padLeft(2, '0')}:${ultimaLeitura!.minute.toString().padLeft(2, '0')}:${ultimaLeitura!.second.toString().padLeft(2, '0')}';
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        const Text(
+          'broker.hivemq.com',
+          style: TextStyle(fontSize: 11, color: ScopeColors.textDim),
+        ),
+        Text(
+          texto,
+          style: const TextStyle(fontSize: 11, color: ScopeColors.textDim),
+        ),
+      ],
     );
   }
 }
