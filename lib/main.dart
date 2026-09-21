@@ -146,6 +146,8 @@ class _KeepTrackScreenState extends State<KeepTrackScreen> {
             children: [
               _buildHeader(),
               const SizedBox(height: 28),
+              _buildReleButton(),
+              const SizedBox(height: 14),
               _buildMetricCard(
                 label: 'POTÊNCIA UTILIZADA',
                 value: potencia?.toStringAsFixed(0) ?? '—',
@@ -159,8 +161,6 @@ class _KeepTrackScreenState extends State<KeepTrackScreen> {
                 unit: 'kWh',
                 destacado: (consumo ?? 0) > 0.005,
               ),
-              const SizedBox(height: 20),
-              _buildReleButton(),
               const Spacer(),
               _buildFooter(),
             ],
@@ -295,8 +295,8 @@ class _KeepTrackScreenState extends State<KeepTrackScreen> {
         ),
         child: Text(
           releLigado
-              ? 'RELÉ LIGADO — TOCAR PARA DESLIGAR'
-              : 'RELÉ DESLIGADO — TOCAR PARA LIGAR',
+              ? 'LIGADO — TOCAR PARA DESLIGAR'
+              : 'DESLIGADO — TOCAR PARA LIGAR',
           style: const TextStyle(
             fontFamily: 'monospace',
             fontSize: 13,
